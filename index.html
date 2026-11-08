@@ -1,0 +1,1673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0d1512">
+<title>Shootout</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  body {
+    background: #0a0f1f;
+    color: #eef1f8;
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  [hidden] { display: none !important; }
+
+  /*
+   * The game is always sideways. If the phone shows the page upright (for example
+   * with rotation lock on), the page turns itself to match how the phone is held.
+   */
+  #app { position: fixed; inset: 0; }
+  #app.turned {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    width: var(--long-side);
+    height: var(--short-side);
+    transform: translate(-50%, -50%) rotate(var(--turn));
+  }
+
+  /* Every screen is drawn in game pixels on this one canvas. */
+  #screen { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /*
+   * Player cards. The frame is chunky pixels, like the game; the photo and stats
+   * inside are smooth. --s is one frame pixel; --tone is the team's shirt colour.
+   */
+  #card-layer { position: absolute; inset: 0; pointer-events: none; }
+  /* The line from the player to his card: smooth, not pixels, drawn out from his head. */
+  .card-line { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .card-line line { stroke-linecap: round; animation: card-line-draw var(--draw) cubic-bezier(.2, .7, .3, 1) both; }
+  .card-line .under { stroke: rgba(30, 20, 4, 0.8); stroke-width: 5.5; }
+  .card-line .over { stroke: #f0cf62; stroke-width: 3; }
+  .card-line circle { fill: #e8c45a; stroke: rgba(30, 20, 4, 0.75); stroke-width: 1.5; animation: card-dot 180ms ease-out both; }
+  @keyframes card-line-draw { from { stroke-dashoffset: var(--length); } to { stroke-dashoffset: 0; } }
+  @keyframes card-dot { from { r: 0; } }
+  .card {
+    position: absolute;
+    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.6));
+    --gold: #e8c45a;
+    --gold-dark: #8a6a1c;
+    position: relative;
+    /* Stepped pixel corners: the frame's outline, cut in whole pixels. */
+    clip-path: polygon(
+      calc(var(--s) * 2) 0, calc(100% - var(--s) * 2) 0,
+      calc(100% - var(--s) * 2) var(--s), calc(100% - var(--s)) var(--s),
+      calc(100% - var(--s)) calc(var(--s) * 2), 100% calc(var(--s) * 2),
+      100% calc(100% - var(--s) * 2), calc(100% - var(--s)) calc(100% - var(--s) * 2),
+      calc(100% - var(--s)) calc(100% - var(--s)), calc(100% - var(--s) * 2) calc(100% - var(--s)),
+      calc(100% - var(--s) * 2) 100%, calc(var(--s) * 2) 100%,
+      calc(var(--s) * 2) calc(100% - var(--s)), var(--s) calc(100% - var(--s)),
+      var(--s) calc(100% - var(--s) * 2), 0 calc(100% - var(--s) * 2),
+      0 calc(var(--s) * 2), var(--s) calc(var(--s) * 2),
+      var(--s) var(--s), calc(var(--s) * 2) var(--s));
+    background: var(--gold-dark);
+    padding: var(--s);
+    /* Grows out of the end of the line. */
+    animation: card-in 240ms cubic-bezier(.2, 1.3, .4, 1);
+  }
+  @keyframes card-in { from { transform: scale(0.15); opacity: 0; } }
+  /* Gold band, one pixel of dark, then the card face. */
+  .card-band {
+    height: 100%;
+    padding: var(--s);
+    background:
+      linear-gradient(var(--gold), var(--gold)) top / 100% var(--s) no-repeat,
+      linear-gradient(#fff3c0, #fff3c0) left top / var(--s) 30% no-repeat,
+      #c99a2e;
+  }
+  .card-face {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: linear-gradient(160deg, #1d2a24, #0c1310 70%);
+    outline: var(--s) solid #3d2c08;
+    overflow: hidden;
+  }
+  .card-photo {
+    position: relative;
+    flex: 0 0 64%;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--tone) 55%, #1d2a24), #0c1310 75%);
+  }
+  .card-photo img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 22%; display: block; }
+  .card-photo canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  /* The photo fades into the card at the bottom. */
+  .card-photo::after {
+    content: '';
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 38%;
+    background: linear-gradient(transparent, #0f1814 92%);
+  }
+  .card-badge {
+    position: absolute;
+    top: 6px;
+    left: 8px;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    line-height: 1;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  }
+  .card-number { font: 900 30px/1 "Arial Black", system-ui, sans-serif; color: var(--gold); }
+  .card-role { font: 800 11px/1.3 system-ui, sans-serif; letter-spacing: 0.12em; color: #fff; }
+  .card-tone { width: 18px; height: 4px; margin-top: 4px; background: var(--tone); box-shadow: 0 0 0 1px rgba(0,0,0,.5); }
+  .card-info { position: relative; z-index: 1; margin-top: -26px; padding: 0 10px; text-align: center; }
+  .card-name {
+    font: 900 clamp(13px, 2.6vh + 6px, 19px)/1.1 "Arial Black", system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-team { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold); margin-top: 1px; }
+  .card-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    margin: 6px 10px 0;
+    padding-top: 6px;
+    border-top: 1px solid rgba(232, 196, 90, 0.4);
+  }
+  .card-stat { display: flex; flex-direction: column; align-items: center; line-height: 1.05; padding: 0 1px; }
+  .card-stat + .card-stat { border-left: 1px solid rgba(232, 196, 90, 0.2); }
+  .card-value { font: 900 clamp(16px, 3.6vh + 6px, 26px)/1 "Arial Black", system-ui, sans-serif; color: #fff; }
+  /* Labels can take two lines, so they're spelled out rather than abbreviated. */
+  .card-label {
+    min-height: 2.3em;
+    margin-top: 3px;
+    font: 800 8px/1.15 system-ui, sans-serif;
+    letter-spacing: 0.04em;
+    text-align: center;
+    color: #b9c7bf;
+  }
+  .card-tap { margin-top: 4px; font-size: 9px; letter-spacing: 0.16em; text-align: center; color: var(--gold); animation: card-blink 1.2s ease-in-out infinite; }
+  @keyframes card-blink { 50% { opacity: 0.35; } }
+  .card-foot { margin-top: auto; padding: 0 6px 4px; font-size: 7px; line-height: 1.2; color: #6f7f77; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="screen" role="img" aria-label="World Cup 2026 shootout"></canvas>
+  <div id="card-layer" hidden></div>
+</div>
+
+<script type="module">
+  import { createTiltSession, requestTiltPermission, upVector } from './tilt.js';
+  import {
+    AIM_LIMITS, BALL_RADIUS, PLAYER_DIVE_REACH,
+    difficulty, newMatch, score, playerKicksNext, recordKick, isOver,
+    resolvePlayerKick, opponentKick, resolveDive, aimFromTilt, shotWobble, shotZoneAt,
+  } from './shootout.js';
+  import {
+    ALL_GROUPS, ROUND_NAMES, groupOf, strengthOf, newRun, nextStep, recordResult,
+    standings, placement, resolveBracket, revealedRounds, codeOf, groupMatches,
+  } from './tournament.js';
+  import {
+    kickerPixels, kickerAt, kickerFor, RUN_TO_STRIKE_MS,
+    KICKER_PIXEL, BALL_PIXEL_NEAR, BALL_PIXEL_FAR, BALL_SPRITE,
+  } from './kicker.js';
+  import { goalieFor, goaliePixels, planSave, saveFrame, glovesAt, READY_POSE, GOALIE_PIXEL } from './goalie.js';
+  import { buildStadium, drawCrowd, drawGoalFrame, drawSpot, pixelCircle } from './stadium.js';
+  import { PLAYER_STATS } from './player-stats.js';
+  import {
+    COLORS, text, textWidth, wrap, fit, rect, panel, sprite, backdrop, band, button, stars,
+    TROPHY, TROPHY_PALETTE, MARKS,
+  } from './pixel-ui.js';
+  import { drawFlag } from './flags.js';
+
+  const $ = (id) => document.getElementById(id);
+  const tilt = createTiltSession();
+
+  const READY_MS = 1200;
+  const FLIGHT_MS = 450;
+  const BALL_ARRIVES_AFTER_ADJUST_MS = 80;
+  const RESULT_MS = 1400;
+  const KEEPER_HOME = { x: 0, y: 0.4 };
+  // Just below the goal line, where the ball sits for the kick.
+  const PENALTY_SPOT = { x: 0, y: -0.07 };
+
+  const COPY = {
+    player: { goal: 'Goal!', saved: 'Saved', missed: 'Missed' },
+    opponent: { goal: 'They scored', saved: 'You saved it!', missed: 'They missed' },
+  };
+
+  const SAVE_KEY = 'wc-shootout-run';
+  const ORDINALS = ['', '1st', '2nd', '3rd', '4th'];
+
+  let run = null;
+  let step = null;
+  let settings = difficulty(3);
+  let match = null;
+  let kick = null;
+  let wobblePhase = [0, 0, 0, 0];
+
+  // Sideways view. When the phone shows the page upright, the page turns itself:
+  // 90 degrees when the phone's right edge is up, -90 when its left edge is.
+  let pageTurn = 90;
+  const SIDEWAYS_THRESHOLD = 0.55;
+
+  function isTurned() {
+    return window.innerHeight > window.innerWidth;
+  }
+
+  function applySideways() {
+    const app = $('app');
+    const turned = isTurned();
+    app.classList.toggle('turned', turned);
+    if (turned) {
+      app.style.setProperty('--long-side', `${window.innerHeight}px`);
+      app.style.setProperty('--short-side', `${window.innerWidth}px`);
+      app.style.setProperty('--turn', `${pageTurn}deg`);
+    }
+    layout();
+  }
+
+  /** Rotation the page adds on top of the phone's own, so tilt matches what you see. */
+  function extraTurn() {
+    return isTurned() ? pageTurn : 0;
+  }
+
+  // Follows which way the phone is held, but never mid-game, so the view can't flip during a kick.
+  window.addEventListener('deviceorientation', (event) => {
+    if (event.beta === null || event.gamma === null || kick) return;
+    const sideways = upVector(event.beta, event.gamma)[0];
+    if (Math.abs(sideways) < SIDEWAYS_THRESHOLD) return;
+    const turn = sideways > 0 ? 90 : -90;
+    if (turn !== pageTurn) {
+      pageTurn = turn;
+      applySideways();
+    }
+  });
+  window.addEventListener('resize', applySideways);
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  // A run survives refreshing the page, so a long tournament isn't lost.
+  function saveRun() {
+    try {
+      if (run) localStorage.setItem(SAVE_KEY, JSON.stringify(run));
+      else localStorage.removeItem(SAVE_KEY);
+    } catch {
+      // Private browsing can refuse storage. The run still works until the page closes.
+    }
+  }
+
+  function loadRun() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SAVE_KEY));
+      if (saved && groupOf(saved.team) && Array.isArray(saved.results)) return saved;
+    } catch {
+      // A missing or damaged save just means starting fresh.
+    }
+    return null;
+  }
+
+  async function keepScreenOn() {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    try {
+      await navigator.wakeLock.request('screen');
+    } catch {
+      // Low battery mode can refuse this. The game still works, the screen may just dim.
+    }
+  }
+  document.addEventListener('visibilitychange', keepScreenOn);
+
+  function placementNotes(place) {
+    const notes = [`You finished ${ORDINALS[place.position]} in Group ${place.group}.`];
+    if (place.position === 3) {
+      notes.push(place.qualified
+        ? `That made you one of the eight best third-placed teams (${ORDINALS[place.thirdRank] || `${place.thirdRank}th`}).`
+        : `Only the eight best third-placed teams go through, and you ranked ${place.thirdRank}th.`);
+    }
+    if (place.replaces) notes.push(`You take ${place.replaces}'s place in the bracket.`);
+    return notes;
+  }
+
+  function finishNotes(finish) {
+    if (finish.outcome === 'groups') return ['You went out in the group stage.'];
+    const lines = [];
+    if (finish.outcome === 'champion') lines.push('You won the World Cup!');
+    else if (finish.round === 'F') lines.push(`You lost the final to ${finish.lastOpponent}.`);
+    else if (finish.round === '3RD') lines.push(finish.won ? 'You finished third.' : 'You finished fourth.');
+    else lines.push(`You were knocked out in the ${ROUND_NAMES[finish.round]} by ${finish.lastOpponent}.`);
+    if (finish.outcome !== 'champion') lines.push(`${finish.champion} won the World Cup.`);
+    return lines;
+  }
+
+  // The bracket's shape: each column lists games top to bottom, and each game
+  // is fed by the two games beside it in the column further out.
+  const BRACKET_COLUMNS = [
+    { label: 'R32', games: [74, 77, 73, 75, 83, 84, 81, 82] },
+    { label: 'R16', games: [89, 90, 93, 94] },
+    { label: 'QF', games: [97, 98] },
+    { label: 'SF', games: [101] },
+    { label: 'Final', games: [104] },
+    { label: 'SF', games: [102] },
+    { label: 'QF', games: [99, 100] },
+    { label: 'R16', games: [91, 92, 95, 96] },
+    { label: 'R32', games: [76, 78, 79, 80, 86, 88, 85, 87] },
+  ];
+  // "1–1 (3–4 pens)" becomes "1 (3)" and "1 (4)", one for each team.
+  function scoresPerTeam(score) {
+    const parts = score && score.match(/^(\d+)–(\d+)(?:\s*\((\d+)–(\d+) pens\))?/);
+    if (!parts) return ['', ''];
+    return parts[3] ? [`${parts[1]} (${parts[3]})`, `${parts[2]} (${parts[4]})`] : [parts[1], parts[2]];
+  }
+
+  /** What to show for one game, keeping later rounds hidden until you get there. */
+  function bracketGameView(game, context) {
+    const { finished, place, revealed } = context;
+    const round = game.round;
+    const showTeams = place && place.qualified
+      ? finished || revealed.includes(round) || round === step.round
+      : finished;
+    const showResult = finished || revealed.includes(round) || game.played;
+    const scores = showResult && game.winner ? scoresPerTeam(game.score) : ['', ''];
+    const teams = [game.team1, game.team2].map((team, index) => {
+      let shown;
+      if (showTeams && team) shown = { name: team };
+      else if (game.slots) shown = teamHoldingSlot(game.slots[index]);
+      else shown = { name: '?' };
+      return {
+        ...shown,
+        score: scores[index],
+        won: showResult && game.winner && game.winner === team,
+        lost: showResult && game.winner && game.winner !== team,
+        mine: shown.name === run.team,
+      };
+    });
+    const middle = showResult && game.winner ? (game.score || 'went through') : 'v';
+    return { teams, caption: `${ROUND_NAMES[round]}: ${teams[0].name} ${middle} ${teams[1].name}` };
+  }
+
+  /**
+   * Who fills a Round of 32 spot like "2A" while the groups are still going.
+   * Other groups finished as they really did. Your group's spots follow its
+   * table so far, so they're marked as not settled yet.
+   */
+  function teamHoldingSlot(code) {
+    const position = Number(code[0]);
+    const group = code[1];
+    if (group === groupOf(run.team)) {
+      return { name: standings(group, run)[position - 1].team, provisional: true };
+    }
+    return { name: ALL_GROUPS[group][position - 1] };
+  }
+
+  function playNextGame() {
+    if (!tilt.hasNeutral) {
+      screen = 'calibrate';
+      return;
+    }
+    keepScreenOn();
+    startMatch();
+  }
+
+  function startMatch() {
+    keepersShown = new Set();
+    hideCard();
+    step = nextStep(run);
+    settings = difficulty(step.strength);
+    match = newMatch();
+    screen = 'match';
+    layout();
+    startKick(performance.now());
+  }
+
+  // ---------- Player cards ----------
+  // How each card plays: a still scene, then a line drawn from the player's head
+  // to where the card will be, then the card pops out of it and waits for a tap.
+  const CARD_PAUSE_MS = 450;
+  const CARD_LINE_MS = 320;
+  // Taps right as the card appears don't count, so a stray tap can't skip it.
+  const CARD_TAP_GUARD_MS = 250;
+  // Keepers who've had their card this match.
+  let keepersShown = new Set();
+  const CARD_LABELS = {
+    taker: ['GOALS', 'ASSISTS', 'SHOTS', 'BALL WINS'],
+    keeper: ['SAVES', 'SHOTS FACED', 'CONCEDED', 'CLEAN SHEETS'],
+  };
+  const CARD_TITLES = {
+    taker: ['Goals', 'Assists', 'Shots', 'Ball wins: tackles and interceptions that won the ball back'],
+    keeper: ['Saves', 'Shots on target faced', 'Goals conceded', 'Clean sheets'],
+  };
+
+  function buildCard({ kind, team, person }) {
+    const info = PLAYER_STATS[`${team}|${person.number}`] || { stats: [0, 0, 0, 0] };
+    const card = element('div', 'card');
+    card.style.setProperty('--tone', person.colors.k);
+    const band = element('div', 'card-band');
+    const face = element('div', 'card-face');
+    const photo = element('div', 'card-photo');
+    if (info.photo) {
+      const img = element('img');
+      img.src = `players/${info.photo}`;
+      img.alt = person.name;
+      img.onerror = () => img.replaceWith(pixelPortrait(kind, person));
+      photo.append(img);
+    } else {
+      photo.append(pixelPortrait(kind, person));
+    }
+    const badge = element('div', 'card-badge');
+    badge.append(element('div', 'card-number', String(person.number)),
+      element('div', 'card-role', info.pos || (kind === 'keeper' ? 'GK' : 'FW')), element('div', 'card-tone'));
+    photo.append(badge);
+    const infoBox = element('div', 'card-info');
+    infoBox.append(element('div', 'card-name', person.name), element('div', 'card-team', `${team} · 2026`));
+    const stats = element('div', 'card-stats');
+    info.stats.forEach((value, i) => {
+      const cell = element('div', 'card-stat');
+      cell.title = CARD_TITLES[kind][i];
+      cell.append(element('div', 'card-value', String(value)), element('div', 'card-label', CARD_LABELS[kind][i]));
+      stats.append(cell);
+    });
+    const foot = element('div', 'card-foot', info.credit ? `Photo: ${info.credit}` : '');
+    face.append(photo, infoBox, stats, element('div', 'card-tap', 'TAP TO CONTINUE'), foot);
+    band.append(face);
+    card.append(band);
+    return card;
+  }
+
+  // Starts a card: the line begins drawing on the next frame, once we know where
+  // the player's head is.
+  function startCard(entry, now) {
+    kick.card = { ...entry, start: now, geometry: null, shownAt: null };
+  }
+
+  // A player's head is about this many game pixels across from its middle.
+  const HEAD_RADIUS = 3.6;
+
+  // Works out where the card goes (beside the player, on the side with more room)
+  // and where the line runs, from the player's head to the card's edge.
+
+  function placeCard(anchor) {
+    const ratio = window.devicePixelRatio || 1;
+    const toCss = (x, y) => ({ x: canvas.offsetLeft + (x * view.scale) / ratio, y: canvas.offsetTop + (y * view.scale) / ratio });
+    const head = toCss(anchor.x, anchor.y);
+    // Card sizes and places are whole game pixels, so its pixel frame lines up with the game's.
+    const pixel = view.scale / ratio;
+    const snap = (value) => Math.round(value / pixel) * pixel;
+    const hudHeight = HUD_HEIGHT * pixel;
+    const areaWidth = canvas.offsetWidth;
+    const areaHeight = canvas.offsetHeight - hudHeight;
+    const height = snap(Math.min(areaHeight * 0.9, 330));
+    const width = snap(height * 0.7);
+    const gap = Math.max(50, areaWidth * 0.12);
+    const middle = canvas.offsetLeft + areaWidth / 2;
+    // A player left of (or at) the middle gets his card to his right, and the other way round.
+    const right = head.x <= middle + 1;
+    let left = right ? head.x + gap : head.x - gap - width;
+    left = snap(Math.max(canvas.offsetLeft + 8, Math.min(canvas.offsetLeft + areaWidth - width - 8, left)));
+    const top = snap(canvas.offsetTop + hudHeight + (areaHeight - height) / 2);
+    // The line meets the card where the photo ends and the stats begin.
+    const end = { x: right ? left : left + width, y: top + height * 0.62 };
+    // The line starts right at the edge of his head, on the side facing the card.
+    const reach = (anchor.r * view.scale) / ratio + 1.5;
+    const length = Math.hypot(end.x - head.x, end.y - head.y) || 1;
+    const from = { x: head.x + ((end.x - head.x) / length) * reach, y: head.y + ((end.y - head.y) / length) * reach };
+    return { from, to: end, right, box: { left, top, width, height } };
+  }
+
+  function revealCard(now) {
+    const { box } = kick.card.geometry;
+    const card = buildCard(kick.card);
+    Object.assign(card.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px` });
+    // Grows from the side the line comes in on.
+    card.style.transformOrigin = kick.card.geometry.right ? 'left 62%' : 'right 62%';
+    $('card-layer').append(card);
+    fitName(card.querySelector('.card-name'));
+    kick.card.shownAt = now;
+    hud.detail = 'Tap to continue';
+  }
+
+  // Long names shrink to fit on one line; very long ones go onto two lines.
+  // Measured on the page, so it works whatever the font.
+  function fitName(node) {
+    let size = 19;
+    node.style.fontSize = `${size}px`;
+    while (node.scrollWidth > node.clientWidth && size > 12) {
+      size -= 0.5;
+      node.style.fontSize = `${size}px`;
+    }
+    if (node.scrollWidth <= node.clientWidth) return;
+    node.style.whiteSpace = 'normal';
+    node.style.textOverflow = 'clip';
+    size = 15;
+    node.style.fontSize = `${size}px`;
+    while ((node.scrollWidth > node.clientWidth || node.scrollHeight > size * 1.1 * 2 + 1) && size > 9) {
+      size -= 0.5;
+      node.style.fontSize = `${size}px`;
+    }
+  }
+
+  // A tap on a card: put it away, pause on the still scene, then the next card
+  // or the kick itself.
+  function dismissCard(now) {
+    if (!kick.card || kick.card.shownAt === null || now - kick.card.shownAt < CARD_TAP_GUARD_MS) return;
+    hideCard();
+    kick.card = null;
+    kick.phaseStart = now;
+    hud.detail = '';
+  }
+
+  function hideCard() {
+    $('card-layer').hidden = true;
+    $('card-layer').replaceChildren();
+  }
+
+  // The line from the player to his card: a straight, smooth line that draws
+  // itself out from the edge of his head.
+  function showCardLine({ from, to }) {
+    const svgNs = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(svgNs, 'svg');
+    svg.classList.add('card-line');
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    svg.style.setProperty('--length', String(length));
+    svg.style.setProperty('--draw', `${CARD_LINE_MS}ms`);
+    for (const kind of ['under', 'over']) {
+      const line = document.createElementNS(svgNs, 'line');
+      line.classList.add(kind);
+      line.setAttribute('x1', from.x);
+      line.setAttribute('y1', from.y);
+      line.setAttribute('x2', to.x);
+      line.setAttribute('y2', to.y);
+      line.setAttribute('stroke-dasharray', String(length));
+      svg.append(line);
+    }
+    const dot = document.createElementNS(svgNs, 'circle');
+    dot.setAttribute('cx', from.x);
+    dot.setAttribute('cy', from.y);
+    dot.setAttribute('r', 2.8);
+    svg.append(dot);
+    $('card-layer').replaceChildren(svg);
+    $('card-layer').hidden = false;
+  }
+
+
+  // No free photo: the player's own pixel model, blown up.
+  function pixelPortrait(kind, person) {
+    const pixels = kind === 'keeper' ? goaliePixels(person, READY_POSE) : kickerPixels(person, kickerAt(null, person.foot).pose);
+    let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const key of pixels.keys()) {
+      const [x, y] = key.split(',').map(Number);
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    }
+    const width = maxX - minX + 9;
+    const height = maxY + 6;
+    const art = element('canvas');
+    art.width = width;
+    art.height = height;
+    const pen = art.getContext('2d');
+    for (const [key, part] of pixels) {
+      const color = person.colors[part];
+      if (!color) continue;
+      const [x, y] = key.split(',').map(Number);
+      pen.fillStyle = color;
+      pen.fillRect(x - minX + 4, height - 2 - y - 1, 1, 1);
+    }
+    art.style.objectFit = 'contain';
+    return art;
+  }
+
+  function startKick(now) {
+    const playerShoots = playerKicksNext(match);
+    const team = playerShoots ? run.team : step.opponent;
+    const kicksSoFar = playerShoots ? match.player.length : match.opponent.length;
+    kick = {
+      playerShoots,
+      phase: 'ready',
+      phaseStart: now,
+      opponent: playerShoots ? null : opponentKick(settings),
+      ball: null,
+      keeper: null,
+      outcome: null,
+      kicker: kickerFor(team, kicksSoFar),
+      // The keeper facing this kick: theirs when you shoot, yours when they do.
+      goalie: goalieFor(playerShoots ? step.opponent : run.team),
+      // When the kicker starts his run-up: on your tap for your kicks, or timed so
+      // the ball leaves his foot as their timer runs out.
+      runStart: null,
+    };
+    // Cards before the kick: always the taker, and each keeper the first time he
+    // faces a kick this match.
+    kick.cards = [{ kind: 'taker', team, person: kick.kicker }];
+    const keeperTeam = playerShoots ? step.opponent : run.team;
+    if (!keepersShown.has(keeperTeam)) {
+      keepersShown.add(keeperTeam);
+      kick.cards.push({ kind: 'keeper', team: keeperTeam, person: kick.goalie });
+    }
+    // Everyone stands still while the cards are up; the first one starts after a short pause.
+    kick.phase = 'card';
+    kick.card = null;
+    hideCard();
+    wobblePhase = wobblePhase.map(() => Math.random() * Math.PI * 2);
+    // Who's stepping up, with their real shirt number.
+    const taker = `${kick.kicker.name} (${kick.kicker.number})`;
+    hud.message = playerShoots ? `Your kick: ${taker}` : `In goal vs ${taker}`;
+    hud.detail = '';
+    setTimer(1);
+  }
+
+  function beginAiming(now) {
+    kick.phase = 'aim';
+    kick.phaseStart = now;
+    if (kick.playerShoots) {
+      hud.detail = 'Tilt to aim, tap to shoot';
+    } else {
+      hud.detail = 'The shot lands in the red circle';
+      kick.runStart = now + aimMs() - strikeMs();
+    }
+  }
+
+  // How long this kick's aiming phase lasts: your aim time on your kicks, your
+  // diving time on theirs. Both depend on the taker's skill.
+  function aimMs() {
+    const { aimTime, diveTime } = kick.kicker.timing;
+    return kick.playerShoots ? settings.shootSeconds * 1000 * aimTime : settings.diveSeconds * 1000 * diveTime;
+  }
+
+  // From the start of this taker's run-up until the ball leaves his foot.
+  function strikeMs() {
+    return RUN_TO_STRIKE_MS * kick.kicker.timing.tempo;
+  }
+
+  // Your tap locks the aim where it is right then, and the kicker runs in to hit it.
+  function startRunUp(now) {
+    kick.lockedAim = currentAim(now);
+    kick.runStart = now;
+    kick.phase = 'runup';
+    kick.phaseStart = now;
+    hud.detail = '';
+    setTimer(0);
+  }
+
+  function takePlayerShot(now) {
+    const aim = kick.lockedAim;
+    const result = resolvePlayerKick(aim, settings);
+    kick.ball = aim;
+    kick.keeper = result.keeper;
+    kick.outcome = result.outcome;
+    if (kick.outcome === 'saved') kick.saveStyle = chooseSaveStyle(aim);
+    kick.flightMs = FLIGHT_MS;
+    beginFlight(now, '');
+  }
+
+  // The ball is on its way and you can still adjust your dive until the window closes.
+  function takeOpponentShot(now) {
+    kick.ball = kick.opponent.target;
+    kick.adjustMs = settings.saveAdjustSeconds * 1000;
+    kick.flightMs = kick.adjustMs + BALL_ARRIVES_AFTER_ADJUST_MS;
+    hud.message = 'They shoot!';
+    beginFlight(now, 'Adjust your dive');
+  }
+
+  function beginFlight(now, detail) {
+    kick.phase = 'flight';
+    kick.phaseStart = now;
+    kick.flightStart = now;
+    hud.detail = detail;
+    setTimer(0);
+  }
+
+  function lockDive(now) {
+    kick.keeper = currentAim(now);
+    kick.outcome = resolveDive(kick.ball, kick.keeper);
+    if (kick.outcome === 'saved') kick.saveStyle = chooseSaveStyle(kick.ball);
+  }
+
+  function showResult(now) {
+    const scored = kick.outcome === 'goal';
+    recordKick(match, scored);
+    kick.phase = 'result';
+    kick.phaseStart = now;
+    let message = COPY[kick.playerShoots ? 'player' : 'opponent'][kick.outcome];
+    if (kick.outcome === 'saved') {
+      const caught = kick.saveStyle.caught;
+      if (kick.playerShoots) message = caught ? 'Caught by the keeper' : 'Saved, pushed away';
+      else message = caught ? 'You caught it!' : 'You tipped it away!';
+    }
+    hud.message = message;
+    hud.detail = '';
+    drawScore();
+  }
+
+  function endMatch() {
+    const result = score(match);
+    const won = result.player > result.opponent;
+    const suddenDeath = match.player.length > 5;
+    const endedEarly = match.player.length < 5 || match.opponent.length < 5;
+    let reason = '';
+    if (suddenDeath) reason = 'Decided in sudden death. ';
+    else if (endedEarly) reason = won ? "They couldn't catch up. " : "You couldn't catch up. ";
+    const groupGame = step.match === null;
+    const lines = [`${reason}${step.stage}.`];
+    lastResult = {
+      won,
+      player: result.player,
+      opponent: result.opponent,
+      rival: step.opponent,
+      kicks: { player: [...match.player], opponent: [...match.opponent] },
+      lines,
+    };
+    recordResult(run, step, result.player, result.opponent);
+    saveRun();
+    // After the last group game, say where that left you.
+    const place = groupGame ? placement(run) : null;
+    if (place) lines.push(...placementNotes(place));
+    kick = null;
+    hideCard();
+    screen = 'result';
+  }
+
+  function advance(now) {
+    const elapsed = now - kick.phaseStart;
+    if (kick.phase === 'card') {
+      if (!kick.card) {
+        // Between cards: a beat of the still scene, then the next card or the kick.
+        if (elapsed >= CARD_PAUSE_MS) {
+          if (kick.cards.length) {
+            startCard(kick.cards.shift(), now);
+          } else {
+            kick.phase = 'ready';
+            kick.phaseStart = now;
+            hud.detail = kick.playerShoots ? 'Get ready to aim' : 'Get ready to dive';
+          }
+        }
+      } else if (kick.card.geometry && kick.card.shownAt === null && now - kick.card.start >= CARD_LINE_MS) {
+        revealCard(now);
+      }
+    } else if (kick.phase === 'ready' && elapsed >= READY_MS) {
+      beginAiming(now);
+    } else if (kick.phase === 'aim') {
+      const left = 1 - elapsed / aimMs();
+      setTimer(left);
+      if (left <= 0) {
+        if (kick.playerShoots) startRunUp(now);
+        else takeOpponentShot(now);
+      }
+    } else if (kick.phase === 'runup') {
+      if (now - kick.runStart >= strikeMs()) takePlayerShot(now);
+    } else if (kick.phase === 'flight') {
+      if (!kick.outcome && elapsed >= kick.adjustMs) lockDive(now);
+      if (elapsed >= kick.flightMs) showResult(now);
+    } else if (kick.phase === 'result' && elapsed >= RESULT_MS) {
+      if (isOver(match)) endMatch();
+      else startKick(now);
+    }
+  }
+
+  // Where tilt points in goal units. Your shot can drift outside the goal, your dive can't.
+  function currentAim(now) {
+    const aim = aimFromTilt(tilt.read(now, extraTurn()));
+    const reachX = kick.playerShoots ? AIM_LIMITS.x : 1;
+    const maxY = kick.playerShoots ? AIM_LIMITS.yMax : 1;
+    const drift = kick.playerShoots
+      ? shotWobble(settings, aim.edge, now / 1000, wobblePhase)
+      : { x: 0, y: 0 };
+    return {
+      x: Math.max(-reachX, Math.min(reachX, aim.x + drift.x)),
+      y: Math.max(0, Math.min(maxY, aim.y + drift.y)),
+    };
+  }
+
+  function setTimer(fraction) {
+    hud.timer = Math.max(0, Math.min(1, fraction));
+  }
+
+  // The score bar is drawn every frame from the match itself.
+  function drawScore() {}
+
+  // Drawing. The whole scene is drawn on a small canvas where one pixel is one
+  // game pixel, then scaled up by a whole number, so every pixel on screen is the
+  // same size: no mixed pixel sizes anywhere.
+  const canvas = $('screen');
+  const context = canvas.getContext('2d');
+  const scene = document.createElement('canvas');
+  const g = scene.getContext('2d');
+  // One game pixel in goal units. Everything uses the kicker's pixel size.
+  const PIXEL = KICKER_PIXEL;
+  const UNIT = 1 / PIXEL;
+  // The keeper is drawn a little smaller than the kicker, since he's further away,
+  // but on the same pixel grid.
+  const GOALIE_SCALE = GOALIE_PIXEL / PIXEL;
+  // The ball gets smaller as it flies away, as whole sprites rather than scaled pixels.
+  const BALLS = [BALL_SPRITE, ['.rww.', 'rrwuu', 'wwyyu', 'gwwww', '.ggw.'], ['.rw.', 'rwyu', 'gwyu', '.gw.']];
+  let view = null;
+  let stadium = null;
+  let stadiumKey = '';
+
+  // The score bar along the top of a match, in game pixels.
+  const HUD_HEIGHT = 20;
+
+  // Notches and rounded corners: how far in from the sides to keep things, in game pixels.
+  const safeProbe = document.createElement('div');
+  safeProbe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;'
+    + 'padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+  document.body.append(safeProbe);
+  function safeMargin(scale, ratio) {
+    const style = getComputedStyle(safeProbe);
+    const inset = Math.max(...['Top', 'Right', 'Bottom', 'Left'].map((side) => parseFloat(style[`padding${side}`]) || 0));
+    return Math.max(3, Math.ceil((inset * ratio) / scale));
+  }
+
+  /**
+   * Sizes the scene so the pitch (and the score bar above it) fits, with one
+   * whole-number scale for everything: menus use the exact same pixel size.
+   */
+  function layout() {
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+    canvas.height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+    // Room for the aiming area around the goal, a little above the bar (a shot
+    // aimed well over can poke off the top), and below the line for the run-up.
+    const above = 1.12;
+    const below = 0.24;
+    const needWidth = (AIM_LIMITS.x * 2 + 0.1) * UNIT;
+    const needHeight = (above + below) * UNIT;
+    const scale = Math.max(1, Math.floor(Math.min(canvas.width / needWidth, canvas.height / (needHeight + HUD_HEIGHT))));
+    const width = Math.ceil(canvas.width / scale);
+    const height = Math.ceil(canvas.height / scale);
+    scene.width = width;
+    scene.height = height;
+    const pitchHeight = height - HUD_HEIGHT;
+    view = {
+      scale, width, height, unit: UNIT,
+      centerX: Math.floor(width / 2),
+      groundY: HUD_HEIGHT + Math.round((pitchHeight - needHeight) / 2 + above * UNIT),
+      margin: safeMargin(scale, ratio),
+    };
+    stadium = null;
+    // The stat card's frame uses the same pixel size.
+    $('card-layer').style.setProperty('--s', `${scale / ratio}px`);
+  }
+
+  // Goal units to scene pixels.
+  const X = (x) => view.centerX + x * UNIT;
+  const Y = (y) => view.groundY - y * UNIT;
+
+  const blend = (from, to, t) => ({ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t });
+  const AIM_COLOR = '#5fe08f';
+  const AIM_FILL = 'rgba(95, 224, 143, 0.25)';
+  const SHOT_ZONE_COLOR = '#ff6b6b';
+  const SHOT_ZONE_FILL = 'rgba(255, 107, 107, 0.12)';
+
+  // A circle in goal units, drawn in whole pixels.
+  const circle = (position, radius, stroke, fill, dash = 0) => pixelCircle(g, X(position.x), Y(position.y), radius * UNIT, stroke, fill, dash);
+  const teamShirt = (team) => kickerFor(team, 0).colors.k;
+
+  function drawPitch(now) {
+    // The stadium is built once per size and match; the crowd wears both teams' colours.
+    const key = `${view.width}x${view.height}:${run.team}:${step.opponent}`;
+    if (!stadium || stadiumKey !== key) {
+      stadium = buildStadium(view, [teamShirt(run.team), teamShirt(step.opponent), '#d8d8d8', '#3c3c3c']);
+      stadiumKey = key;
+    }
+
+    const moving = kick.phase === 'flight' || kick.phase === 'result';
+    const progress = kick.phase === 'result' ? 1 : moving ? (now - kick.phaseStart) / kick.flightMs : 0;
+    const eased = 1 - (1 - Math.min(1, progress)) ** 2;
+
+    // Back to front: stadium and crowd, the keeper, the goal frame in front of
+    // him, the kicker (nearest the camera), then the ball and the aim circles.
+    g.drawImage(stadium.canvas, 0, 0);
+    drawCrowd(g, stadium, now, kick.phase === 'result' && kick.outcome === 'goal');
+    drawSpot(g, Math.round(X(PENALTY_SPOT.x)), Math.round(Y(PENALTY_SPOT.y)) + 3);
+    const keeperHead = drawGoalie(now);
+    drawGoalFrame(g, stadium);
+    const kickerHead = drawKicker(now);
+    const ball = ballNow(now, moving, eased);
+    drawBall(ball, BALLS[moving ? Math.min(2, Math.floor(eased * 3)) : 0], kick.kicker.colors);
+
+    if (kick.phase === 'card') {
+      // Nothing to aim at yet: just the line to the card.
+      if (kick.card && !kick.card.geometry) {
+        kick.card.geometry = placeCard(kick.card.kind === 'keeper' ? keeperHead : kickerHead);
+        showCardLine(kick.card.geometry);
+      }
+    } else if (kick.playerShoots) {
+      // A faint outline of how much of the goal their keeper covers, while you aim.
+      if (!moving) circle(KEEPER_HOME, settings.keeperReach, 'rgba(255, 179, 107, 0.55)', null, 3);
+      if (kick.phase === 'runup') circle(kick.lockedAim, BALL_RADIUS, AIM_COLOR, AIM_FILL);
+      else if (!moving) circle(currentAim(now), BALL_RADIUS, AIM_COLOR, AIM_FILL);
+    } else {
+      if (kick.phase === 'aim') {
+        const zone = shotZoneAt(kick.opponent.zone, (now - kick.phaseStart) / aimMs());
+        circle(zone.center, zone.radius, SHOT_ZONE_COLOR, SHOT_ZONE_FILL, 4);
+      }
+      // Where your dive is going: follows the tilt until it locks in during the
+      // ball's flight. Faint, since your keeper shows the save.
+      circle(kick.keeper || currentAim(now), PLAYER_DIVE_REACH, AIM_COLOR, 'rgba(95, 224, 143, 0.12)');
+    }
+
+    drawHud(now);
+  }
+
+  /**
+   * The keeper: in his ready stance until the ball is struck, then saving toward
+   * his dive spot so his gloves get there as the ball does. When it's a save he
+   * goes right to the ball, so you see the gloves meet it.
+   */
+  const clampToGoal = (point) => ({ x: Math.max(-1, Math.min(1, point.x)), y: Math.max(0, Math.min(1, point.y)) });
+
+  /**
+   * Whether a save is caught or pushed away. Shots near his body are usually held;
+   * full-stretch dives are usually parried. A parried ball goes away from the goal:
+   * out past the post from a dive, over the bar from a high one through the
+   * middle, or down and out from a low one.
+   */
+  function chooseSaveStyle(point) {
+    const type = planSave(clampToGoal(point)).type;
+    const holdChance = { block: 0.9, smother: 0.9, jump: 0.7, shuffle: 0.5, dive: 0.25 }[type];
+    if (Math.random() < holdChance) return { caught: true };
+    const side = point.x < 0 ? -1 : 1;
+    let velocity;
+    if (Math.abs(point.x) > 0.35) velocity = { x: side * 1.7, y: point.y > 0.6 ? 0.9 : point.y < 0.25 ? 0.1 : 0.5 };
+    else if (point.y > 0.55) velocity = { x: side * 0.4, y: 1.5 };
+    else velocity = { x: side * (0.9 + Math.random() * 0.6), y: 0.3 };
+    return { caught: false, velocity };
+  }
+
+  // The keeper's pose right now: ready until the ball is struck, then saving
+  // toward his dive spot so his gloves get there as the ball does.
+  function goaliePoseNow(now) {
+    if (kick.phase !== 'flight' && kick.phase !== 'result') return READY_POSE;
+    let target;
+    if (kick.outcome === 'saved') target = kick.ball;
+    else if (kick.playerShoots) target = kick.keeper;
+    else target = kick.keeper || currentAim(now);
+    const plan = planSave(clampToGoal(target));
+    // 1 is the moment the ball arrives; he carries on past it to land.
+    const progress = Math.min(1.8, (now - kick.flightStart) / kick.flightMs);
+    return saveFrame(plan, progress);
+  }
+
+  /**
+   * Where the ball is. It flies to its target; on a save it then either stays in
+   * the keeper's gloves as he lands, or bounces off them and away under gravity.
+   */
+  function ballNow(now, moving, eased) {
+    if (!moving) return PENALTY_SPOT;
+    const sinceContact = (now - kick.flightStart - kick.flightMs) / 1000;
+    if (kick.outcome === 'saved' && sinceContact >= 0) {
+      if (kick.saveStyle.caught) {
+        const gloves = glovesAt(goaliePoseNow(now));
+        return { x: gloves[0] * GOALIE_PIXEL, y: gloves[1] * GOALIE_PIXEL };
+      }
+      const { velocity } = kick.saveStyle;
+      return {
+        x: kick.ball.x + velocity.x * sinceContact,
+        // Falls under gravity and comes to rest on the grass.
+        y: Math.max(0.03, kick.ball.y + velocity.y * sinceContact - 2.6 * sinceContact ** 2),
+      };
+    }
+    return blend(PENALTY_SPOT, kick.ball, eased);
+  }
+
+  function drawGoalie(now) {
+    const keeper = kick.goalie;
+    const pose = goaliePoseNow(now);
+    const left = Math.round(X(0));
+    const ground = view.groundY;
+    let top = -Infinity;
+    let sumX = 0;
+    let count = 0;
+    for (const [key, part] of goaliePixels(keeper, pose, GOALIE_SCALE)) {
+      const color = keeper.colors[part];
+      if (!color) continue;
+      const [x, y] = key.split(',').map(Number);
+      g.fillStyle = color;
+      g.fillRect(left + x, ground - y - 1, 1, 1);
+      if (y > top) { top = y; sumX = 0; count = 0; }
+      if (y === top) { sumX += x; count += 1; }
+    }
+    // The middle of his head and its size, for the card line.
+    const radius = HEAD_RADIUS * GOALIE_SCALE;
+    return { x: left + sumX / count + 0.5, y: ground - top - 1 + radius, r: radius };
+  }
+
+  // The ball, centered on its spot, snapped to whole pixels.
+  function drawBall(ball, rows, colors) {
+    const left = Math.round(X(ball.x) - rows[0].length / 2);
+    const top = Math.round(Y(ball.y) - rows.length / 2);
+    rows.forEach((row, ry) => [...row].forEach((cell, rx) => {
+      const color = colors[cell];
+      if (!color) return;
+      g.fillStyle = color;
+      g.fillRect(left + rx, top + ry, 1, 1);
+    }));
+  }
+
+  // The kicker, from behind: waiting at the start of his run-up, then running in,
+  // striking and jogging on. His pose is blended for this exact moment and turned
+  // into pixels fresh each frame.
+  function drawKicker(now) {
+    // A better taker runs in quicker, so his animation plays faster.
+    const since = kick.runStart === null || now < kick.runStart ? null : (now - kick.runStart) / kick.kicker.timing.tempo;
+    const state = kickerAt(since, kick.kicker.foot);
+    const feetX = Math.round(X(PENALTY_SPOT.x) + state.feetX - 0.5);
+    const feetY = Math.round(Y(PENALTY_SPOT.y) + state.feetDown);
+    let top = -Infinity;
+    let sumX = 0;
+    let count = 0;
+    for (const [key, part] of kickerPixels(kick.kicker, state.pose)) {
+      const color = kick.kicker.colors[part];
+      if (!color) continue;
+      const [x, y] = key.split(',').map(Number);
+      g.fillStyle = color;
+      g.fillRect(feetX + x, feetY - y - 1, 1, 1);
+      if (y > top) { top = y; sumX = 0; count = 0; }
+      if (y === top) { sumX += x; count += 1; }
+    }
+    // The middle of his head and its size, for the card line.
+    return { x: feetX + sumX / count + 0.5, y: feetY - top - 1 + HEAD_RADIUS, r: HEAD_RADIUS };
+  }
+
+  // ================= Screens =================
+  // Every screen is drawn in game pixels on the one canvas. `screen` says which is up.
+  let screen = 'start';
+  let returnTo = 'hub';
+  let pickedTeam = null;
+  let startError = '';
+  let lastResult = null;
+  // Quit needs a second tap within a few seconds, so a stray tap can't end a run.
+  let quitArmedAt = -Infinity;
+  const QUIT_WINDOW_MS = 3000;
+  let groupsTab = 'A';
+  let bracketTab = 'R32';
+  let bracketData = null;
+  let bracketCaption = '';
+  const hud = { message: '', detail: '', timer: 1 };
+  const ui = { buttons: [], pressed: null };
+  const ROUND_SHORT = { R32: 'R32', R16: 'R16', QF: 'QF', SF: 'SF', '3RD': '3RD', F: 'FINAL' };
+
+  const label = (value, x, y, options) => text(g, value, x, y, options);
+  const smallFlag = (team, x, y) => drawFlag(g, team, x, y, 8, 5);
+
+  /** Goal, miss and still-to-come marks for one side of a shootout. */
+  function drawMarks(kicks, x, y, { slots = 5, alignRight = false } = {}) {
+    const shown = kicks.length > slots ? kicks.slice(-slots) : kicks;
+    const marks = [...shown.map((scored) => (scored ? 'goal' : 'miss'))];
+    while (marks.length < slots) marks.push('todo');
+    const colors = { goal: COLORS.green, miss: COLORS.red, todo: COLORS.faint };
+    marks.forEach((mark, i) => {
+      const left = alignRight ? x - (slots - i) * 6 + 1 : x + i * 6;
+      sprite(g, MARKS[mark], left, y, { '#': colors[mark] });
+    });
+  }
+
+  function confetti(now, width, height) {
+    const colors = [COLORS.gold, COLORS.teal, COLORS.red, COLORS.lime, COLORS.blue, COLORS.purple];
+    for (let i = 0; i < 40; i += 1) {
+      const speed = 12 + (i * 7) % 11;
+      const x = (i * 53 + Math.floor(Math.sin(now / 700 + i) * 4)) % width;
+      const y = Math.floor((now / 1000) * speed + i * 37) % height;
+      rect(g, x, y, 1 + (i % 2), 1, colors[i % colors.length]);
+    }
+  }
+
+  // ---------- Start: the first tap asks for motion access ----------
+  function drawStart(now) {
+    const { width, height } = view;
+    const cx = Math.floor(width / 2);
+    backdrop(g, width, height);
+    sprite(g, TROPHY, cx - 7, 6, TROPHY_PALETTE);
+    label('SHOOTOUT', cx, 22, { font: 'big', color: COLORS.gold, align: 'center', shadow: COLORS.goldDark });
+    label('WORLD CUP 2026', cx, 33, { align: 'center' });
+    // The three hosts.
+    ['Canada', 'Mexico', 'USA'].forEach((team, i) => drawFlag(g, team, cx - 26 + i * 18, 41, 14, 9));
+    if (startError) {
+      wrap(startError, width - view.margin * 2 - 10).forEach((line, i) => {
+        label(line, cx, 57 + i * 7, { color: COLORS.red, align: 'center' });
+      });
+    } else if (run) {
+      // A run is saved: carry on with it, or pick a new team.
+      const where = step && step.type === 'game' ? step.stage : 'RUN OVER';
+      button(g, ui, 'continue', cx - 66, 55, 64, 13, `CONTINUE ${codeOf(run.team)}`, () => startGame('continue'), { style: 'primary' });
+      button(g, ui, 'new', cx + 2, 55, 64, 13, 'NEW TEAM', () => startGame('new'));
+      label(`${run.team} · ${where}`, cx, 71, { color: COLORS.dim, align: 'center' });
+    } else if (Math.floor(now / 550) % 2 === 0) {
+      label('TAP TO PICK YOUR TEAM', cx, 58, { color: COLORS.text, align: 'center', shadow: COLORS.shadow });
+    }
+    if (!run || startError) label('TILT YOUR PHONE TO AIM AND TO DIVE', cx, height - 17, { color: COLORS.dim, align: 'center' });
+    label('IT WILL ASK TO USE MOTION: TAP ALLOW', cx, height - 10, { color: COLORS.faint, align: 'center' });
+    // With nothing saved, a tap anywhere starts.
+    if (!run || startError) ui.buttons.unshift({ id: 'start', x: 0, y: 0, w: width, h: height, action: () => startGame(startChoice) });
+  }
+
+  // Runs straight from the tap, because that's when a phone allows asking for motion access.
+  // What the last start tap chose, so a retry after an error does the same.
+  let startChoice = 'new';
+
+  async function startGame(choice) {
+    startChoice = choice;
+    if (!window.isSecureContext) {
+      startError = 'Tilt only works over HTTPS. Open the link from the QR code.';
+      return;
+    }
+    const allowed = await requestTiltPermission();
+    // A computer that refuses has no tilt anyway, so it falls through to the mouse.
+    if (!allowed && typeof DeviceOrientationEvent !== 'undefined' && navigator.maxTouchPoints > 0) {
+      startError = 'Motion access was blocked. Close this tab, scan the code again, and tap Allow.';
+      return;
+    }
+    startError = '';
+    keepScreenOn();
+    tilt.listen();
+    screen = run && choice === 'continue' ? 'calibrate' : 'teams';
+  }
+
+  // ---------- Team list: all 12 groups on one screen ----------
+  function drawTeams() {
+    const { width, height, margin } = view;
+    backdrop(g, width, height);
+    label('PICK YOUR TEAM', margin, 4, { color: COLORS.gold, shadow: COLORS.shadow });
+    label('WORLD CUP 2026', width - margin, 4, { color: COLORS.dim, align: 'right' });
+    const columns = 6;
+    const gap = 2;
+    const boxWidth = Math.floor((width - margin * 2 - gap * (columns - 1)) / columns);
+    const boxHeight = 37;
+    const top = Math.max(12, Math.floor((height - (boxHeight * 2 + gap)) / 2) + 3);
+    const left = Math.floor((width - (boxWidth * columns + gap * (columns - 1))) / 2);
+    Object.keys(ALL_GROUPS).forEach((group, i) => {
+      const x = left + (i % columns) * (boxWidth + gap);
+      const y = top + Math.floor(i / columns) * (boxHeight + gap);
+      panel(g, x, y, boxWidth, boxHeight);
+      // On narrow phones the boxes are tight, so the header shortens and the rows tuck in.
+      label(fit([`GROUP ${group}`, `GRP ${group}`, group], boxWidth - 4), x + boxWidth / 2, y + 2, { color: COLORS.gold, align: 'center' });
+      const inset = boxWidth >= 29 ? 3 : 1;
+      ALL_GROUPS[group].forEach((team, row) => {
+        const rowY = y + 9 + row * 7;
+        const id = `team:${team}`;
+        if (ui.pressed === id) rect(g, x + 1, rowY, boxWidth - 2, 7, COLORS.panelEdge);
+        smallFlag(team, x + inset, rowY);
+        label(codeOf(team), x + inset + 12, rowY + 1);
+        ui.buttons.push({ id, x: x + 1, y: rowY, w: boxWidth - 2, h: 7, action: () => { pickedTeam = team; screen = 'team'; } });
+      });
+    });
+  }
+
+  // ---------- One team, before you pick it ----------
+  function drawTeam() {
+    const { width, height, margin } = view;
+    const team = pickedTeam;
+    backdrop(g, width, height);
+    const flagX = margin + 4;
+    drawFlag(g, team, flagX, 8, 36, 24);
+    const x = flagX + 46;
+    const room = width - margin - x;
+    const big = textWidth(team, 'big') <= room;
+    label(team, x, 9, { font: big ? 'big' : 'small', color: COLORS.text, shadow: COLORS.shadow });
+    label(`GROUP ${groupOf(team)}`, x, big ? 20 : 17, { color: COLORS.gold });
+    // The teams you'd meet in the group.
+    ALL_GROUPS[groupOf(team)].filter((other) => other !== team).forEach((other, i) => {
+      smallFlag(other, x + i * 27, 28);
+      label(codeOf(other), x + 12 + i * 27, 29, { color: COLORS.dim });
+    });
+    label('STRENGTH', flagX, 40, { color: COLORS.dim });
+    stars(g, strengthOf(team), flagX + 35, 40);
+    label('PENALTY TAKERS', flagX, 50, { color: COLORS.dim });
+    const takers = [0, 1, 2].map((i) => kickerFor(team, i));
+    takers.forEach((taker, i) => {
+      label(`${taker.number}`, flagX, 58 + i * 7, { color: COLORS.gold });
+      label(taker.name, flagX + 12, 58 + i * 7);
+    });
+    const buttonY = height - 16;
+    button(g, ui, 'back', margin, buttonY, 34, 11, 'BACK', () => { screen = 'teams'; });
+    const playLabel = `PLAY AS ${codeOf(team)}`;
+    const playWidth = textWidth(playLabel) + 16;
+    button(g, ui, 'pick', width - margin - playWidth, buttonY, playWidth, 11, playLabel, () => chooseTeam(team), { style: 'primary' });
+  }
+
+  function chooseTeam(team) {
+    run = newRun(team);
+    saveRun();
+    if (tilt.hasNeutral) goHub();
+    else screen = 'calibrate';
+  }
+
+  // ---------- Calibrate: how you hold the phone ----------
+  function drawCalibrateScreen(now) {
+    const { width, height, margin } = view;
+    const cx = Math.floor(width / 2);
+    backdrop(g, width, height);
+    label('HOLD YOUR PHONE SIDEWAYS', cx, 6, { color: COLORS.gold, align: 'center', shadow: COLORS.shadow });
+    const lines = wrap('Pick a comfortable angle. Holding it here aims at the middle of the goal.', width - margin * 2 - 30);
+    lines.forEach((line, i) => label(line, cx, 15 + i * 7, { color: COLORS.dim, align: 'center' }));
+    // The angle box sits under however many lines that took.
+    const boxY = 15 + lines.length * 7 + 2;
+    const angle = tilt.angleFromFlat();
+    panel(g, cx - 40, boxY, 80, 26);
+    if (angle === null) {
+      label('WAITING FOR THE', cx, boxY + 6, { color: COLORS.dim, align: 'center' });
+      label('TILT SENSOR...', cx, boxY + 13, { color: COLORS.dim, align: 'center' });
+    } else {
+      // A little phone seen from the side, tilted like yours.
+      const pivot = { x: cx - 30, y: boxY + 21 };
+      rect(g, pivot.x - 3, pivot.y + 1, 22, 1, COLORS.faint);
+      const radians = (Math.max(0, Math.min(90, angle)) * Math.PI) / 180;
+      for (let i = 0; i <= 16; i += 1) {
+        const px = Math.round(pivot.x + Math.cos(radians) * i);
+        const py = Math.round(pivot.y - Math.sin(radians) * i);
+        rect(g, px, py, 2, 1, COLORS.teal);
+      }
+      label(`${Math.round(angle)}°`, cx + 12, boxY + 5, { font: 'big', color: COLORS.text, align: 'center' });
+      label(tilt.mouseMode ? 'MOUSE STANDS IN' : 'FROM FLAT', cx + 12, boxY + 15, { color: COLORS.faint, align: 'center' });
+    }
+    const buttonY = Math.max(boxY + 30, height - 22);
+    if (tilt.ready) {
+      button(g, ui, 'set', cx - 36, buttonY, 72, 13, 'SET THIS ANGLE', () => {
+        tilt.setNeutral();
+        goHub();
+      }, { style: 'primary' });
+    } else {
+      panel(g, cx - 36, buttonY, 72, 13, { fill: COLORS.panel, edge: COLORS.faint });
+      label('SET THIS ANGLE', cx, buttonY + 4, { color: COLORS.faint, align: 'center' });
+    }
+    if (tilt.mouseMode) label('NO TILT SENSOR, SO THE MOUSE STANDS IN FOR TILT', cx, height - 7, { color: COLORS.faint, align: 'center' });
+  }
+
+  // ---------- Hub: your next game, your group, your results ----------
+  function goHub() {
+    step = nextStep(run);
+    screen = step.type === 'finished' ? 'over' : 'hub';
+  }
+
+  function drawHub(now) {
+    const { width, height, margin } = view;
+    backdrop(g, width, height);
+    const leftWidth = Math.floor((width - margin * 2) * 0.55);
+    const rightX = margin + leftWidth + 5;
+    const rightWidth = width - margin - rightX;
+
+    // Your team.
+    drawFlag(g, run.team, margin, 5, 14, 9);
+    const nameRoom = leftWidth - 19;
+    const big = textWidth(run.team, 'big') <= nameRoom;
+    label(fit([run.team, codeOf(run.team)], nameRoom, big ? 'big' : 'small'), margin + 19, big ? 6 : 8, {
+      font: big ? 'big' : 'small', shadow: COLORS.shadow,
+    });
+    const groupGamesPlayed = run.results.filter((result) => result.match === null).length;
+    const stage = step.match === null ? `${step.stage} · GAME ${groupGamesPlayed + 1} OF 3` : step.stage;
+    label(stage, margin, 18, { color: COLORS.gold });
+
+    // Next match.
+    const boxY = 26;
+    panel(g, margin, boxY, leftWidth, 31, { highlight: COLORS.panelLight });
+    label('NEXT MATCH', margin + 4, boxY + 3, { color: COLORS.dim });
+    stars(g, step.strength, margin + leftWidth - 33, boxY + 3);
+    const rowY = boxY + 11;
+    // Big team codes when there's room for them and the VS between.
+    const codeFont = leftWidth >= 100 ? 'big' : 'small';
+    const codeY = rowY + (codeFont === 'big' ? 2 : 3);
+    drawFlag(g, run.team, margin + 4, rowY, 14, 9);
+    label(codeOf(run.team), margin + 21, codeY, { font: codeFont });
+    label('VS', margin + leftWidth / 2, rowY + 3, { color: COLORS.gold, align: 'center' });
+    drawFlag(g, step.opponent, margin + leftWidth - 20, rowY, 14, 9);
+    label(codeOf(step.opponent), margin + leftWidth - 22, codeY, { font: codeFont, align: 'right' });
+    label(fit([step.opponent, codeOf(step.opponent)], leftWidth - 8), margin + leftWidth - 4, boxY + 24, { color: COLORS.dim, align: 'right' });
+    label('YOU', margin + 4, boxY + 24, { color: COLORS.dim });
+
+    button(g, ui, 'play', margin, boxY + 34, leftWidth, 13, 'PLAY', playNextGame, { style: 'primary', font: 'big' });
+
+    // Your group, and your games so far.
+    drawMiniTable(rightX, 5, rightWidth);
+    drawYourResults(rightX, 44, rightWidth, height - 17);
+
+    // Other screens.
+    const barY = height - 14;
+    const armed = now - quitArmedAt < QUIT_WINDOW_MS;
+    const items = [
+      ['groups', 'GROUPS', () => openGroups('hub')],
+      ['bracket', 'BRACKET', () => openBracket('hub')],
+      ['angle', 'ANGLE', () => { screen = 'calibrate'; }],
+      ['quit', armed ? 'SURE?' : 'QUIT', () => {
+        if (performance.now() - quitArmedAt < QUIT_WINDOW_MS) playAgain();
+        else quitArmedAt = performance.now();
+      }],
+    ];
+    const gap = 3;
+    const itemWidth = Math.floor((width - margin * 2 - gap * (items.length - 1)) / items.length);
+    items.forEach(([id, text_, action], i) => {
+      const style = id === 'quit' && armed ? 'danger' : 'secondary';
+      button(g, ui, id, margin + i * (itemWidth + gap), barY, itemWidth, 10, text_, action, { style });
+    });
+  }
+
+  function drawMiniTable(x, y, width) {
+    const group = groupOf(run.team);
+    const rows = standings(group, run);
+    label(`GROUP ${group}`, x, y, { color: COLORS.gold });
+    const right = x + width;
+    const columns = [['PTS', right], ['GD', right - 17], ['P', right - 31]];
+    for (const [name, at] of columns) label(name, at, y, { color: COLORS.dim, align: 'right' });
+    rows.forEach((row, i) => {
+      const rowY = y + 7 + i * 7;
+      const mine = row.team === run.team;
+      if (mine) rect(g, x - 1, rowY, width + 2, 7, COLORS.panelLight);
+      label(String(i + 1), x, rowY + 1, { color: COLORS.faint });
+      smallFlag(row.team, x + 5, rowY);
+      label(codeOf(row.team), x + 17, rowY + 1, { color: mine ? COLORS.gold : COLORS.text });
+      const gd = row.gd > 0 ? `+${row.gd}` : String(row.gd);
+      label(String(row.points), right, rowY + 1, { align: 'right', color: mine ? COLORS.gold : COLORS.text });
+      label(gd, right - 17, rowY + 1, { align: 'right', color: COLORS.dim });
+      label(String(row.played), right - 31, rowY + 1, { align: 'right', color: COLORS.dim });
+    });
+  }
+
+  function drawYourResults(x, y, width, bottom) {
+    label('YOUR GAMES', x, y, { color: COLORS.gold });
+    if (!run.results.length) {
+      label('NONE YET', x, y + 8, { color: COLORS.faint });
+      return;
+    }
+    const games = resolveBracket(run);
+    const fits = Math.max(1, Math.floor((bottom - (y + 8)) / 7));
+    run.results.slice(-fits).forEach((result, i) => {
+      const rowY = y + 8 + i * 7;
+      const round = result.match === null ? 'GRP' : ROUND_SHORT[games.get(result.match).round];
+      const won = result.goalsFor > result.goalsAgainst;
+      label(round, x, rowY, { color: COLORS.faint });
+      label(codeOf(result.opponent), x + 22, rowY);
+      label(`${result.goalsFor}-${result.goalsAgainst}`, x + 40, rowY, { color: won ? COLORS.green : COLORS.red });
+      label(won ? 'W' : 'L', x + width, rowY, { color: won ? COLORS.green : COLORS.red, align: 'right' });
+    });
+  }
+
+  // ---------- Groups: one group's full table at a time ----------
+  function openGroups(from) {
+    returnTo = from;
+    groupsTab = groupOf(run.team);
+    screen = 'groups';
+  }
+
+  function drawGroups() {
+    const { width, height, margin } = view;
+    backdrop(g, width, height);
+    button(g, ui, 'back', margin, 4, 26, 10, 'BACK', () => { screen = returnTo; });
+    const letters = Object.keys(ALL_GROUPS);
+    const tabsLeft = margin + 30;
+    const tabWidth = Math.min(13, Math.floor((width - margin - tabsLeft + 1) / letters.length) - 1);
+    letters.forEach((letter, i) => {
+      button(g, ui, `group:${letter}`, tabsLeft + i * (tabWidth + 1), 4, tabWidth, 10, letter, () => { groupsTab = letter; }, {
+        style: 'tab', active: letter === groupsTab,
+      });
+    });
+    const yours = groupsTab === groupOf(run.team);
+    label(`GROUP ${groupsTab}`, margin, 19, { font: 'big', color: COLORS.gold, shadow: COLORS.shadow });
+    if (yours) label('YOUR GROUP · SO FAR', margin + textWidth(`GROUP ${groupsTab}`, 'big') + 6, 21, { color: COLORS.dim });
+
+    // The table.
+    const rows = standings(groupsTab, yours ? run : null);
+    const right = width - margin - 4;
+    const columns = [['PTS', 0], ['GD', 16], ['GA', 30], ['GF', 42], ['L', 54], ['D', 62], ['W', 70], ['P', 78]];
+    const headerY = 30;
+    columns.forEach(([name, back]) => label(name, right - back, headerY, { color: COLORS.dim, align: 'right' }));
+    const nameX = margin + 19;
+    const nameRoom = right - 90 - nameX;
+    rows.forEach((row, i) => {
+      const rowY = headerY + 7 + i * 8;
+      const mine = row.team === run.team;
+      panel(g, margin, rowY - 1, width - margin * 2, 9, { fill: mine ? COLORS.panelLight : COLORS.panel, edge: mine ? COLORS.goldDark : COLORS.panelEdge });
+      // The top two go through for sure.
+      if (i < 2) rect(g, margin + 1, rowY, 1, 7, COLORS.green);
+      label(String(i + 1), margin + 4, rowY + 1, { color: COLORS.faint });
+      smallFlag(row.team, margin + 9, rowY);
+      label(fit([row.team, codeOf(row.team)], nameRoom), nameX + 2, rowY + 1, { color: mine ? COLORS.gold : COLORS.text });
+      const gd = row.gd > 0 ? `+${row.gd}` : String(row.gd);
+      const values = [row.points, gd, row.ga, row.gf, row.lost, row.drawn, row.won, row.played];
+      columns.forEach(([, back], c) => label(String(values[c]), right - back, rowY + 1, { align: 'right', color: c === 0 ? COLORS.text : COLORS.dim }));
+    });
+
+    // Results.
+    const resultsY = headerY + 7 + 4 * 8 + 2;
+    const games = groupMatches(groupsTab, yours ? run : null);
+    if (!games.length) {
+      label('NO GAMES PLAYED YET', margin, resultsY, { color: COLORS.faint });
+      return;
+    }
+    const perRow = 3;
+    const cellWidth = Math.floor((width - margin * 2) / perRow);
+    games.forEach((game, i) => {
+      const x = margin + (i % perRow) * cellWidth;
+      const y = resultsY + Math.floor(i / perRow) * 7;
+      if (y > height - 8) return;
+      label(codeOf(game.team1), x, y);
+      label(`${game.goals1}-${game.goals2}`, x + 14, y, { color: COLORS.gold });
+      label(codeOf(game.team2), x + 30, y);
+    });
+  }
+
+  // ---------- Bracket: one round at a time, laid out like the two halves of the draw ----------
+  const BRACKET_TABS = [['R32', 'R32', 0, 8], ['R16', 'R16', 1, 7], ['QF', 'QF', 2, 6], ['SF', 'SF', 3, 5], ['F', 'FINAL', null, null]];
+
+  function openBracket(from) {
+    returnTo = from;
+    step = nextStep(run);
+    bracketData = {
+      games: resolveBracket(run),
+      context: { finished: step.type === 'finished', place: placement(run), revealed: revealedRounds(run, step) },
+    };
+    const round = step.round === '3RD' ? 'F' : step.round;
+    bracketTab = BRACKET_TABS.some(([id]) => id === round) ? round : 'R32';
+    bracketCaption = '';
+    screen = 'bracket';
+  }
+
+  function drawBracketScreen() {
+    const { width, height, margin } = view;
+    backdrop(g, width, height);
+    button(g, ui, 'back', margin, 4, 26, 10, 'BACK', () => { screen = returnTo; });
+    BRACKET_TABS.forEach(([id, name], i) => {
+      button(g, ui, `round:${id}`, margin + 30 + i * 27, 4, 26, 10, name, () => { bracketTab = id; bracketCaption = ''; }, {
+        style: 'tab', active: id === bracketTab,
+      });
+    });
+    const gap = 4;
+    const columnWidth = Math.floor((width - margin * 2 - gap) / 2);
+    const top = 18;
+    const tab = BRACKET_TABS.find(([id]) => id === bracketTab);
+    if (bracketTab === 'F') {
+      const x = Math.floor((width - columnWidth) / 2);
+      label('FINAL', width / 2, top + 1, { color: COLORS.gold, align: 'center' });
+      drawBracketRow(104, x, top + 8, columnWidth);
+      label('THIRD PLACE', width / 2, top + 20, { color: COLORS.dim, align: 'center' });
+      drawBracketRow(103, x, top + 27, columnWidth);
+    } else {
+      // Left half and right half of the draw, each in its bracket order.
+      [tab[2], tab[3]].forEach((column, side) => {
+        BRACKET_COLUMNS[column].games.forEach((num, row) => {
+          drawBracketRow(num, margin + side * (columnWidth + gap), top + row * 7, columnWidth);
+        });
+      });
+    }
+    const caption = bracketCaption || `${ROUND_NAMES[bracketTab === 'F' ? 'F' : bracketTab]} · TAP A MATCH FOR FULL NAMES`;
+    label(fit([caption, caption.split(':')[0]], width - margin * 2), width / 2, height - 9, { color: COLORS.dim, align: 'center' });
+  }
+
+  function drawBracketRow(num, x, y, width) {
+    const game = bracketData.games.get(num);
+    const shown = bracketGameView(game, bracketData.context);
+    const id = `game:${num}`;
+    const mine = shown.teams.some((team) => team.mine);
+    if (mine) rect(g, x, y, width, 7, COLORS.panelLight);
+    if (ui.pressed === id) rect(g, x, y, width, 7, COLORS.panelEdge);
+    const middle = x + Math.floor(width / 2);
+    shown.teams.forEach((team, side) => {
+      const flagX = side === 0 ? x + 1 : x + width - 11;
+      const known = team.name && team.name !== '?';
+      if (known) smallFlag(team.name, flagX, y);
+      else rect(g, flagX, y, 10, 7, COLORS.panel);
+      let color = COLORS.text;
+      if (team.mine) color = COLORS.gold;
+      else if (team.lost || team.provisional || !known) color = COLORS.faint;
+      const code = known ? codeOf(team.name) : '?';
+      label(code, side === 0 ? x + 13 : x + width - 13, y + 1, { color, align: side === 0 ? 'left' : 'right' });
+      const goals = (team.score || '').replace(' ', '');
+      label(goals, side === 0 ? middle - 3 : middle + 3, y + 1, { color, align: side === 0 ? 'right' : 'left' });
+    });
+    label('-', middle, y + 1, { color: COLORS.faint, align: 'center' });
+    ui.buttons.push({ id, x, y, w: width, h: 7, action: () => { bracketCaption = shown.caption; } });
+  }
+
+  // ---------- Score bar along the top of a match ----------
+  function drawHud() {
+    const { width, margin } = view;
+    rect(g, 0, 0, width, HUD_HEIGHT, '#070b16');
+    band(g, 0, HUD_HEIGHT - 1, width, 1);
+    const result = score(match);
+    // You on the left, them on the right.
+    smallFlag(run.team, margin, 2);
+    label(codeOf(run.team), margin + 12, 3, { color: COLORS.gold });
+    drawMarks(match.player, margin + 27, 3);
+    smallFlag(step.opponent, width - margin - 10, 2);
+    label(codeOf(step.opponent), width - margin - 12, 3, { align: 'right' });
+    drawMarks(match.opponent, width - margin - 27, 3, { alignRight: true });
+    label(`${result.player} - ${result.opponent}`, width / 2, 2, { font: 'big', align: 'center' });
+
+    // What's happening, then what to do.
+    const room = width - margin * 2;
+    const message = hud.message;
+    const detail = hud.detail;
+    const both = detail ? `${message} · ${detail}` : message;
+    if (textWidth(both) <= room) {
+      const start = Math.round(width / 2 - textWidth(both) / 2);
+      const drawn = label(message, start, 11);
+      if (detail) label(` · ${detail}`, start + drawn, 11, { color: COLORS.gold });
+    } else {
+      label(fit([message, message.split(':')[0]], room), width / 2, 11, { align: 'center' });
+    }
+    // How long is left to aim or dive.
+    rect(g, margin, HUD_HEIGHT - 4, width - margin * 2, 2, '#1a2440');
+    const left = Math.round((width - margin * 2) * hud.timer);
+    rect(g, margin, HUD_HEIGHT - 4, left, 2, hud.timer < 0.25 ? COLORS.red : COLORS.green);
+  }
+
+  // ---------- After a shootout ----------
+  function drawResult(now) {
+    const { width, height } = view;
+    const cx = Math.floor(width / 2);
+    const r = lastResult;
+    backdrop(g, width, height);
+    if (r.won) confetti(now, width, height);
+    label(r.won ? 'YOU WIN!' : 'YOU LOSE', cx, 7, { font: 'big', color: r.won ? COLORS.gold : COLORS.red, align: 'center', shadow: COLORS.shadow });
+    // Score line.
+    const y = 21;
+    label(`${r.player} - ${r.opponent}`, cx, y + 1, { font: 'big', align: 'center' });
+    drawFlag(g, run.team, cx - 53, y, 14, 9);
+    label(codeOf(run.team), cx - 16, y + 2, { font: 'big', align: 'right', color: COLORS.gold });
+    drawFlag(g, r.rival, cx + 37, y, 14, 9);
+    label(codeOf(r.rival), cx + 16, y + 2, { font: 'big' });
+    // Every kick.
+    const slots = Math.max(5, r.kicks.player.length, r.kicks.opponent.length);
+    const marksWidth = slots * 6 - 1;
+    label('YOU', cx - marksWidth / 2 - 4, 35, { color: COLORS.dim, align: 'right' });
+    drawMarks(r.kicks.player, Math.round(cx - marksWidth / 2), 35, { slots });
+    label(codeOf(r.rival), cx - marksWidth / 2 - 4, 42, { color: COLORS.dim, align: 'right' });
+    drawMarks(r.kicks.opponent, Math.round(cx - marksWidth / 2), 42, { slots });
+    // What it means.
+    let lineY = 52;
+    for (const line of r.lines) {
+      for (const part of wrap(line, width - view.margin * 2 - 16)) {
+        if (lineY > height - 24) break;
+        label(part, cx, lineY, { color: COLORS.dim, align: 'center' });
+        lineY += 7;
+      }
+    }
+    button(g, ui, 'continue', cx - 32, height - 18, 64, 12, 'CONTINUE', goHub, { style: 'primary' });
+  }
+
+  // ---------- The end of a run ----------
+  function playAgain() {
+    run = null;
+    saveRun();
+    quitArmedAt = -Infinity;
+    screen = 'teams';
+  }
+
+  function drawOver(now) {
+    const { width, height, margin } = view;
+    const cx = Math.floor(width / 2);
+    backdrop(g, width, height);
+    const champion = step.outcome === 'champion';
+    if (champion) {
+      confetti(now, width, height);
+      sprite(g, TROPHY, cx - 7, 5, TROPHY_PALETTE);
+    }
+    const titleY = champion ? 21 : 8;
+    label(champion ? 'WORLD CHAMPIONS!' : 'TOURNAMENT OVER', cx, titleY, {
+      font: 'big', color: champion ? COLORS.gold : COLORS.text, align: 'center', shadow: COLORS.shadow,
+    });
+    const nameY = titleY + 11;
+    const nameWidth = textWidth(run.team);
+    drawFlag(g, run.team, Math.round(cx - (nameWidth + 12) / 2), nameY - 1, 8, 5);
+    label(run.team, Math.round(cx - (nameWidth + 12) / 2) + 12, nameY, { color: COLORS.gold });
+    const wins = run.results.filter((result) => result.goalsFor > result.goalsAgainst).length;
+    label(`PLAYED ${run.results.length} · WON ${wins} · LOST ${run.results.length - wins}`, cx, nameY + 8, { color: COLORS.dim, align: 'center' });
+    const lines = [
+      ...(step.outcome === 'groups' && step.place ? placementNotes(step.place) : []),
+      ...finishNotes(step),
+    ];
+    let lineY = nameY + 18;
+    for (const line of lines) {
+      for (const part of wrap(line, width - margin * 2 - 16)) {
+        if (lineY > height - 24) break;
+        label(part, cx, lineY, { align: 'center' });
+        lineY += 7;
+      }
+    }
+    const buttonY = height - 18;
+    button(g, ui, 'again', cx - 32, buttonY, 64, 12, 'PLAY AGAIN', playAgain, { style: 'primary' });
+    button(g, ui, 'groups', cx - 32 - 46, buttonY + 1, 42, 10, 'GROUPS', () => openGroups('over'));
+    button(g, ui, 'bracket', cx + 36, buttonY + 1, 42, 10, 'BRACKET', () => openBracket('over'));
+  }
+
+  // ---------- Drawing and input ----------
+  const SCREENS = {
+    start: drawStart,
+    teams: drawTeams,
+    team: drawTeam,
+    calibrate: drawCalibrateScreen,
+    hub: drawHub,
+    groups: drawGroups,
+    bracket: drawBracketScreen,
+    match: drawPitch,
+    result: drawResult,
+    over: drawOver,
+  };
+
+  function render(now) {
+    const ratio = window.devicePixelRatio || 1;
+    if (!view || canvas.width !== Math.round(canvas.clientWidth * ratio) || canvas.height !== Math.round(canvas.clientHeight * ratio)) {
+      layout();
+    }
+    ui.buttons = [];
+    SCREENS[screen](now);
+    // Scale the scene up with no smoothing, so every pixel stays sharp and square.
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.imageSmoothingEnabled = false;
+    context.drawImage(scene, 0, 0, view.width * view.scale, view.height * view.scale);
+  }
+
+  // Where a tap landed, in game pixels.
+  function scenePoint(event) {
+    const ratio = window.devicePixelRatio || 1;
+    return { x: (event.offsetX * ratio) / view.scale, y: (event.offsetY * ratio) / view.scale };
+  }
+
+  function buttonAt(point) {
+    for (let i = ui.buttons.length - 1; i >= 0; i -= 1) {
+      const b = ui.buttons[i];
+      if (point.x >= b.x && point.x < b.x + b.w && point.y >= b.y && point.y < b.y + b.h) return b;
+    }
+    return null;
+  }
+
+  canvas.addEventListener('pointerdown', (event) => {
+    if (screen === 'match') {
+      // A tap puts a card away, or takes your shot.
+      if (kick && kick.phase === 'card') dismissCard(performance.now());
+      else if (kick && kick.phase === 'aim' && kick.playerShoots) startRunUp(performance.now());
+      return;
+    }
+    const target = buttonAt(scenePoint(event));
+    ui.pressed = target ? target.id : null;
+  });
+  canvas.addEventListener('pointerup', (event) => {
+    if (screen === 'match') return;
+    const target = buttonAt(scenePoint(event));
+    const pressed = ui.pressed;
+    ui.pressed = null;
+    if (target && target.id === pressed) target.action();
+  });
+  canvas.addEventListener('pointercancel', () => { ui.pressed = null; });
+
+  applySideways();
+  run = loadRun();
+  if (run) step = nextStep(run);
+
+  function frame(now) {
+    if (screen === 'match' && kick) advance(now);
+    render(now);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
